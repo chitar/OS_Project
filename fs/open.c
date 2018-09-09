@@ -75,7 +75,7 @@ PUBLIC int do_open()
 	int inode_nr = search_file(pathname);
 
 	struct inode * pin = 0;
-	if (flags & O_CREAT) {
+	if ((flags & O_CREAT)||(flags & O_CREATE_DIR)) {
 		if (inode_nr) {
 			printl("file exists.\n");
 			return -1;
@@ -119,7 +119,7 @@ PUBLIC int do_open()
 				  &driver_msg);
 		}
 		else if (imode == I_DIRECTORY) {
-			assert(pin->i_num == ROOT_INODE);
+			//assert(pin->i_num == ROOT_INODE);
 		}
 		else {
 			assert(pin->i_mode == I_REGULAR);
@@ -160,6 +160,7 @@ PRIVATE struct inode * create_file(char * path, int flags)
 					  NR_DEFAULT_FILE_SECTS);
 	struct inode *newino = new_inode(dir_inode->i_dev, inode_nr,
 					 free_sect_nr);
+	if(flags&O_CREATE_DIR)newino->i_mode=I_DIRECTORY;
 
 	new_dir_entry(dir_inode, newino->i_num, filename);
 

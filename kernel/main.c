@@ -16,6 +16,7 @@
 #include "console.h"
 #include "global.h"
 #include "proto.h"
+#include "config.h"
 #include "instruction.h"
 
 
@@ -141,52 +142,15 @@ void TestA()
 	assert(rd_bytes <= strlen(bufw));
 
 	/* create */
-	fd = open(filename, O_CREAT | O_RDWR);
+	/*fd = open(filename, O_CREAT | O_RDWR);
 	assert(fd != -1);
-	printl("File created: %s (fd %d)\n", filename, fd);
+	printl("File created: %s (fd %d)\n", filename, fd);*/
+	
 
-	/* write */
-	n = write(fd, bufw, strlen(bufw));
-	assert(n == strlen(bufw));
 
-	/* close */
-	close(fd);
-
-	/* open */
-	fd = open(filename, O_RDWR);
-	assert(fd != -1);
-	printl("File opened. fd: %d\n", fd);
-
-	/* read */
-	n = read(fd, bufr, rd_bytes);
-	assert(n == rd_bytes);
-	bufr[n] = 0;
-	printl("%d bytes read: %s\n", n, bufr);
-
-	/* close */
-	close(fd);
-
-	char * filenames[] = {"/foo", "/bar", "/baz"};
-
-	/* create files */
-	for (i = 0; i < sizeof(filenames) / sizeof(filenames[0]); i++) {
-		fd = open(filenames[i], O_CREAT | O_RDWR);
-		assert(fd != -1);
-		printl("File created: %s (fd %d)\n", filenames[i], fd);
-		close(fd);
-	}
-
-	char * rfilenames[] = {"/bar", "/foo", "/baz", "/dev_tty0"};
-
-	/* remove files */
-	for (i = 0; i < sizeof(rfilenames) / sizeof(rfilenames[0]); i++) {
-		if (unlink(rfilenames[i]) == 0)
-			printl("File removed: %s\n", rfilenames[i]);
-		else
-			printl("Failed to remove file: %s\n", rfilenames[i]);
-	}
 
 	spin("TestA");
+
 }
 
 /*======================================================================*
@@ -203,13 +167,43 @@ void TestB()
 
 	char rdbuf[128];
 
+	cur_pde=get_inode(ROOT_DEV, ROOT_INODE);
 	while (1) {
 		printf("$ ");
 		int r = read(fd_stdin, rdbuf, 70);
 		rdbuf[r] = 0;
 
-		Ins ins=read_ins(rdbuf);
-		printf("ins_type:%s,n_para:%d\n", ins.ins_type,ins.n_para);
+		/*Ins ins=read_ins(rdbuf);
+		printf("ins_type:%s,n_para:%d\n", ins.ins_type,ins.n_para);*/
+
+		Dirs dirs=read_dir(get_inode(ROOT_DEV, ROOT_INODE));
+		ins_ls(dirs);
+
+		char filename[200];
+		struct inode* pp;
+		
+		/*int ress=search_file("bala");
+		int res=strip_path(filename,"bala",&pp);
+		printf("filename:%s,pp->i_num:%d,search_file:%d\n",filename,pp->i_num,ress);*/
+		int fd = open("bala", O_CREATE_DIR | O_RDWR);
+		close(fd);
+		dirs=read_dir(cur_pde);
+		ins_ls(dirs);
+		ins_cd("/bala/");
+		fd = open("balabala", O_CREATE_DIR | O_RDWR);
+		close(fd);
+		fd = open("balabalabala", O_CREAT | O_RDWR);
+		close(fd);
+		dirs=read_dir(cur_pde);
+		ins_ls(dirs);
+
+		/*printf("rootInode.i_start_sect:%d\n",get_inode(ROOT_DEV,ROOT_INODE)->i_start_sect);
+		ins_cd("/blah/");
+		printf("cur_pde->i_num:%d\n",cur_pde->i_num);
+		ins_ls(read_dir(cur_pde));
+		printf("ls end.\n");*/
+	
+	
 	}
 
 	assert(0); /* never arrive here */
@@ -241,5 +235,115 @@ PUBLIC void panic(const char *fmt, ...)
 
 	/* should never arrive here */
 	__asm__ __volatile__("ud2");
+}
+
+
+/****misc.c***/
+/*****************************************************************************
+ *                                search_file
+ *****************************************************************************/
+/**
+ * Search the file and return the inode_nr.
+ *
+ * @param[in] path The full path of the file to search.
+ * @return         Ptr to the i-node of the file if successful, otherwise zero.
+ * 
+ * @see open()
+ * @see do_open()
+ *****************************************************************************/
+PUBLIC int search_file(char * path)
+{
+	int i, j;
+
+	char filename[MAX_PATH];
+	memset(filename, 0, MAX_FILENAME_LEN);
+	struct inode * dir_inode;
+	if (strip_path(filename, path, &dir_inode) != 0)
+		return 0;
+
+	if (filename[0] == 0)	/* path: "/" */
+		return dir_inode->i_num;
+
+	/**
+	 * Search the dir for the file.
+	 */
+	Dirs dirs = read_dir(get_inode(ROOT_DEV, dir_inode->i_num));
+	for (int i = 0; i < N_MAX_DIR; i++)
+	{
+		if (dirs.dirs[i].inode_nr != 0)
+			if (strcmp(dirs.dirs[i].name, filename) == 0)
+				return dirs.dirs[i].inode_nr;
+	}
+
+	return 0;
+}
+
+/*****************************************************************************
+ *                                strip_path
+ *****************************************************************************/
+/**
+ * Get the basename from the fullpath.
+ *
+ * In Orange'S FS v1.0, all files are stored in the root directory.
+ * There is no sub-folder thing.
+ *
+ * This routine should be called at the very beginning of file operations
+ * such as open(), read() and write(). It accepts the full path and returns
+ * two things: the basename and a ptr of the root dir's i-node.
+ *
+ * e.g. After stip_path(filename, "/blah", ppinode) finishes, we get:
+ *      - filename: "blah"
+ *      - *ppinode: root_inode
+ *      - ret val:  0 (successful)
+ *
+ * Currently an acceptable pathname should begin with at most one `/'
+ * preceding a filename.
+ *
+ * Filenames may contain any character except '/' and '\\0'.
+ *
+ * @param[out] filename The string for the result.
+ * @param[in]  pathname The full pathname.
+ * @param[out] ppinode  The ptr of the dir's inode will be stored here.
+ * 
+ * @return Zero if success, otherwise the pathname is not valid.
+ *****************************************************************************/
+PUBLIC int strip_path(char * filename, const char * pathname,
+		      struct inode** ppinode)
+{
+	struct inode* pde = get_inode(ROOT_DEV, ROOT_INODE);
+	if(*pathname!=0&&*pathname!='/')pde=cur_pde;
+	char* t = filename;
+	if (*pathname == 0)return -1;
+	while (1)
+	{
+		if (*pathname == '/')
+		{
+			*t = '\0';
+			//进入下级iNode
+			if (*filename == 0)pde = get_inode(ROOT_DEV, ROOT_INODE);
+			else if (pde = find_inode(filename,pde))
+			{
+
+			}
+			else return -1;
+			t = filename;
+			pathname++;
+		}
+		else if (*pathname == '\0')
+		{
+			if (*t != 0)
+				*t = '\0';
+			break;
+		}
+		else
+		{
+			*t++ = *pathname++;
+		}
+
+	}
+
+
+	*ppinode = pde;
+	return 0;
 }
 
